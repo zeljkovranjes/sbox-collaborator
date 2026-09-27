@@ -43,10 +43,32 @@ public static class Settings
 	}
 
 	/// <summary>The personal access key (<c>sbc_…</c>). The server key used to join is never stored.</summary>
+	private static string _cachedStored;
+	private static string _cachedPlain;
+
 	public static string Token
 	{
-		get => GetUser( TokenKey );
-		set => SetUser( TokenKey, value );
+		get
+		{
+			var stored = GetUser( TokenKey );
+			if ( Memory is not null || string.IsNullOrEmpty( stored ) )
+				return stored;
+			// Keys saved by older versions are plain text: encrypt them on first read.
+			if ( !SecureStore.IsProtected( stored ) )
+			{
+				var protectedValue = SecureStore.Protect( stored );
+				if ( protectedValue != stored )
+					SetUser( TokenKey, protectedValue );
+				return stored;
+			}
+			if ( stored != _cachedStored )
+			{
+				_cachedStored = stored;
+				_cachedPlain = SecureStore.Unprotect( stored );
+			}
+			return _cachedPlain;
+		}
+		set => SetUser( TokenKey, Memory is not null ? value : SecureStore.Protect( value ) );
 	}
 
 	/// <summary>Display name of the signed-in developer, shown before the server answers.</summary>
@@ -68,6 +90,27 @@ public static class Settings
 	{
 		get => ProjectCookie.Get( AutoSyncKey, true );
 		set => ProjectCookie.Set( AutoSyncKey, value );
+	}
+
+	/// <summary>Reserve the scenes and prefabs open in the editor while they are open.</summary>
+	public static bool AutoReserveOpen
+	{
+		get => ProjectCookie.Get( "collaborator.autoreserve", true );
+		set => ProjectCookie.Set( "collaborator.autoreserve", value );
+	}
+
+	/// <summary>Post the editor's compile results (broken / fixed) to the team.</summary>
+	public static bool ShareCompile
+	{
+		get => ProjectCookie.Get( "collaborator.share.compile", true );
+		set => ProjectCookie.Set( "collaborator.share.compile", value );
+	}
+
+	/// <summary>Post play-mode sessions (with any errors logged while playing) to the team.</summary>
+	public static bool SharePlaytests
+	{
+		get => ProjectCookie.Get( "collaborator.share.playtests", true );
+		set => ProjectCookie.Set( "collaborator.share.playtests", value );
 	}
 
 	public static bool HasCredentials => !string.IsNullOrEmpty( ServerUrl ) && !string.IsNullOrEmpty( Token );

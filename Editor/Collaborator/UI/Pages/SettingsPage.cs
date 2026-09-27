@@ -50,6 +50,28 @@ public sealed class SettingsPage : Page
 		syncRow.AddStretchCell();
 		var sync = syncRow.Add( UiStyle.Secondary( assets, "Sync now", "sync", () => _ = AssetSync.SyncAsync() ) );
 		sync.Enabled = CollabSession.CanWrite && !AssetSync.Running;
+
+		var automatic = AddCard( host, layout, "bolt", "Shared automatically" );
+		automatic.Layout.Add( UiStyle.Muted( new Label( "What this editor tells the team on its own (for this s&box project).", automatic ) { WordWrap = true }, small: true ) );
+		Toggle( automatic, "Reserve open scenes and prefabs", "While a scene or prefab is open here it is reserved for you; closing it releases it. Never overrides a teammate.", Settings.AutoReserveOpen, v => Settings.AutoReserveOpen = v );
+		Toggle( automatic, "Share compile results", "When your code stops compiling (or starts again) the team sees it, with the first errors.", Settings.ShareCompile, v => Settings.ShareCompile = v );
+		Toggle( automatic, "Share playtest results", "Each play session longer than 5 s is logged, with any errors from while you played.", Settings.SharePlaytests, v => Settings.SharePlaytests = v );
+		var held = EditorAutomation.AutoReserved;
+		if ( held.Count > 0 )
+			automatic.Layout.Add( UiStyle.Mono( new Label( UiStyle.Breakable( $"Reserved now: {string.Join( ", ", held )}" ), automatic ) { WordWrap = true } ) );
+
+		var security = AddCard( host, layout, "shield", "Access key" );
+		var protectedKey = !Settings.InMemory;
+		security.Layout.Add( UiStyle.Muted( new Label( protectedKey
+			? $"Stored encrypted ({SecureStore.Method}): copying the editor's settings elsewhere doesn't copy a usable key."
+			: "Kept for this session only.", security ) { WordWrap = true }, small: true ) );
+	}
+
+	private static void Toggle( Card card, string label, string help, bool value, Action<bool> set )
+	{
+		var box = card.Layout.Add( new Checkbox( label, card ) { Value = value, ToolTip = help } );
+		box.StateChanged = state => set( state == CheckState.On );
+		card.Layout.Add( UiStyle.Muted( new Label( help, card ) { WordWrap = true }, small: true ) );
 	}
 
 	private static Widget Field( Widget parent, string caption, string value )

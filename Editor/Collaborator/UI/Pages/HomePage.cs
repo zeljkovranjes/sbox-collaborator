@@ -24,12 +24,62 @@ public sealed class HomePage : Page
 			return;
 		}
 
+		if ( CollabSession.CatchUp is { } catchUp )
+			BuildCatchUp( host, layout, catchUp );
 		BuildRightNow( host, layout, o );
 		if ( o.Blockers is { Count: > 0 } )
 			BuildBlockers( host, layout, o.Blockers );
 		BuildInProgress( host, layout, o.TasksInProgress );
 		BuildRecent( host, layout, o );
 	}
+
+	// ------------------------------------------------------------------ while you were away
+
+	private static void BuildCatchUp( Widget host, Layout layout, CatchUp c )
+	{
+		var card = layout.Add( new Card( host ) { Accent = Theme.Blue } );
+		card.Layout.Spacing = 4;
+		var head = card.Header( "history", "While you were away", iconColor: Theme.Blue );
+		head.Add( UiStyle.Muted( new Label( c.Since is { } since ? $"since {UiStyle.Ago( since )}" : "", card ), small: true ) );
+		head.AddStretchCell();
+		head.Add( UiStyle.Icon( card, "close", CollabSession.DismissCatchUp, "Dismiss", 22 ) );
+
+		var lines = (c.Summary ?? "").Replace( "\r", "" ).Split( '\n' ).Select( l => l.TrimEnd() ).Where( l => l.Length > 0 ).ToList();
+		if ( lines.Count == 0 || (c.Counts?.Total ?? 0) == 0 )
+		{
+			card.Layout.Add( UiStyle.Muted( new Label( "Nothing new – you're up to date.", card ) ) );
+			return;
+		}
+		var shown = 0;
+		foreach ( var raw in lines )
+		{
+			if ( shown >= 16 )
+			{
+				card.Layout.Add( UiStyle.Muted( new Label( $"… {lines.Count - shown} more lines", card ), small: true ) );
+				break;
+			}
+			var line = raw.Trim();
+			if ( line.StartsWith( '#' ) )
+			{
+				var title = line.TrimStart( '#' ).Trim();
+				if ( shown > 0 || !title.StartsWith( "Catch", StringComparison.OrdinalIgnoreCase ) )
+					card.Layout.Add( UiStyle.Bold( new Label( Plain( title ), card ) { WordWrap = true } ) );
+			}
+			else if ( line.StartsWith( "- " ) || line.StartsWith( "* " ) )
+			{
+				var row = card.Layout.AddRow();
+				row.Spacing = 6;
+				row.Add( UiStyle.Muted( new Label( "•", card ) { FixedWidth = 10, Alignment = TextFlag.CenterTop } ) );
+				row.Add( new Label( Plain( line[2..] ), card ) { WordWrap = true }, 1 );
+			}
+			else
+				card.Layout.Add( UiStyle.Muted( new Label( Plain( line ), card ) { WordWrap = true } ) );
+			shown++;
+		}
+	}
+
+	/// <summary>Markdown emphasis and code marks are noise in a label.</summary>
+	private static string Plain( string text ) => UiStyle.Breakable( text.Replace( "**", "" ).Replace( "`", "" ) );
 
 	// ------------------------------------------------------------------ right now
 

@@ -33,7 +33,9 @@ public static class Toasts
 	{
 		var (icon, color) = MessageStyle( m.Type );
 		var who = string.IsNullOrEmpty( m.FromName ) ? m.FromDeveloperId : m.FromName;
-		var title = $"{who}: {(string.IsNullOrEmpty( m.Subject ) ? TypeTitle( m.Type ) : m.Subject)}";
+		var title = m.Type == "handoff"
+			? $"{who} handed {(m.TaskId is { } id ? $"task #{id}" : "work")} {(m.Broadcast ? "back to the team" : "to you")}"
+			: $"{who}: {(string.IsNullOrEmpty( m.Subject ) ? TypeTitle( m.Type ) : m.Subject)}";
 		Show( title, m.Body, icon, color, m.Type is "blocker" or "warning" or "handoff" ? 16 : 10 );
 	}
 

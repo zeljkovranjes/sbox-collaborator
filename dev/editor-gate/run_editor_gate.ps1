@@ -28,10 +28,17 @@ param(
     [int]$StartTimeoutSec = 240,
     [switch]$Clean,
     [switch]$KeepGoing,
-    [switch]$KeepServer
+    [switch]$KeepServer,
+    [switch]$RealGitHub,             # sign in with a real GitHub login in the browser (needs an OAuth app, see README)
+    [string]$GithubClientId = "",
+    [string]$GithubClientSecret = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ($RealGitHub) {
+    if ($GithubClientId -eq "" -or $GithubClientSecret -eq "") { Write-Host "-RealGitHub needs -GithubClientId and -GithubClientSecret (an OAuth app with callback http://127.0.0.1:$Port/auth/github/callback)"; exit 2 }
+    $TimeoutSec += 300
+}
 $libRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 if ($ServerRoot -eq "") { $ServerRoot = Join-Path $libRoot "..\..\02_Server" }
 $ServerRoot = (Resolve-Path $ServerRoot).Path
@@ -114,10 +121,13 @@ if (-not (Test-Path $distIndex) -or (Get-Item $distIndex).LastWriteTime -lt $new
 $dbPath = Join-Path $srvDir "gate.sqlite"
 Get-ChildItem $srvDir -Filter "gate.sqlite*" -ErrorAction SilentlyContinue | Remove-Item -Force
 $secret = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+$webhookSecret = -join ((1..40) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 $serverEnv = @{
     SECRET_KEY = $secret; SQLITE_PATH = $dbPath; PORT = "$Port"; HOST = "127.0.0.1"; PUBLIC_URL = $baseUrl
     LOG_LEVEL = "info"; SERVER_NAME = "Collaborator Gate"; WEB_DIR = (Join-Path $ServerRoot "dist\web")
+    GITHUB_WEBHOOK_SECRET = $webhookSecret
 }
+if ($RealGitHub) { $serverEnv.GITHUB_OAUTH_CLIENT_ID = $GithubClientId; $serverEnv.GITHUB_OAUTH_CLIENT_SECRET = $GithubClientSecret }
 function With-ServerEnv([scriptblock]$body) {
     $saved = @{}
     foreach ($k in $serverEnv.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $serverEnv[$k]) }
@@ -134,7 +144,7 @@ function TokenFrom([string]$text) {
 
 Invoke-ServerCli @("developer", "add", "gate", "--name", "Gate Dev", "--admin") | Out-Null
 Invoke-ServerCli @("developer", "add", "mate", "--name", "Teammate") | Out-Null
-Invoke-ServerCli @("project", "create", "collabgate", "--name", "Collab Gate", "--kind", "game", "--ident", "collabgate") | Out-Null
+Invoke-ServerCli @("project", "create", "collabgate", "--name", "Collab Gate", "--kind", "game", "--ident", "collabgate", "--repo", "gatefixture/collabgate") | Out-Null
 $adminKey  = TokenFrom (Invoke-ServerCli @("key", "create", "gate", "--name", "gate approver"))
 $mateKey   = TokenFrom (Invoke-ServerCli @("key", "create", "mate", "--name", "teammate codex"))
 $serverKey = TokenFrom (Invoke-ServerCli @("server-key", "create", "--name", "gate", "--uses", "5"))
@@ -187,7 +197,9 @@ Set-Content -Path "$result.arm" -Value (Get-Date -Format o) -Encoding ascii
 $gateEnv = @{
     COLLAB_GATE_RESULT = $result; COLLAB_GATE_SERVER = $baseUrl; COLLAB_GATE_SERVER_KEY = $serverKey
     COLLAB_GATE_ADMIN_TOKEN = $adminKey; COLLAB_GATE_MATE_TOKEN = $mateKey; COLLAB_GATE_PROJECT = "collabgate"; COLLAB_GATE_SCRATCH = $scratch
+    COLLAB_GATE_WEBHOOK_SECRET = $webhookSecret
 }
+if ($RealGitHub) { $gateEnv.COLLAB_GATE_REAL_GITHUB = "1" }
 $logStart = 0
 if (Test-Path $sboxLog) { $logStart = (Get-Item $sboxLog).Length }
 foreach ($k in $gateEnv.Keys) { [Environment]::SetEnvironmentVariable($k, $gateEnv[$k]) }
@@ -224,8 +236,8 @@ public static class GateWin {
     }
 }
 "@
-function Capture([string]$target) {
-    $h = [GateWin]::Find("Collaborator")
+function Capture([string]$target, [string]$title = "Collaborator") {
+    $h = [GateWin]::Find($title)
     if ($h -eq [IntPtr]::Zero) { return $false }
     # No SetForegroundWindow: pulling the window under the user's cursor lets a stray click land on it.
     # PrintWindow with PW_RENDERFULLCONTENT draws the window even when other windows cover it.
@@ -304,10 +316,15 @@ while ($true) {
     # --- requests from the gate
     foreach ($req in Get-ChildItem $outDir -Filter "*.req" -ErrorAction SilentlyContinue) {
         $name = [IO.Path]::GetFileNameWithoutExtension($req.Name)
-        $payload = (Get-Content $req.FullName -Raw -ErrorAction SilentlyContinue)
+        $payload = (Get-Content $req.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
         Remove-Item $req.FullName -Force -ErrorAction SilentlyContinue
         $ok = $true
-        if ($name -like "shot_*") { $ok = Capture ($payload.Trim()) ; if ($ok) { Say "  shot  $([IO.Path]::GetFileName($payload.Trim()))" DarkGray } }
+        if ($name -like "shot_*") {
+            # payload: "<png path>" or "<png path>|<window title>"
+            $parts = $payload.Trim() -split '\|', 2
+            $ok = if ($parts.Count -gt 1) { Capture $parts[0] $parts[1] } else { Capture $parts[0] }
+            if ($ok) { Say "  shot  $([IO.Path]::GetFileName($parts[0]))" DarkGray } else { Say "  shot  $([IO.Path]::GetFileName($parts[0])) FAILED (window not found)" Yellow }
+        }
         elseif ($name -eq "server_stop") { Stop-Server; Say "  server stopped (resilience check)" DarkGray }
         elseif ($name -eq "server_start") { $ok = Start-TestServer; Say "  server restarted: $ok" DarkGray }
         if ($ok) { Set-Content (Join-Path $outDir "$name.ok") "ok" }

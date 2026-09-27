@@ -118,7 +118,7 @@ public sealed class MessagesPage : Page
 		var to = m.Broadcast ? "everyone" : m.ToDeveloperId == CollabSession.MyId ? "you" : m.ToDeveloperId ?? m.ToAgentId;
 		var column = row.Layout.AddColumn( 1 );
 		column.Spacing = 2;
-		column.Add( UiStyle.Muted( new Label( $"{from} → {to} · {Toasts.TypeTitle( m.Type )}{(m.TaskId is { } taskId ? $" · #{taskId}" : "")} · {UiStyle.Ago( m.CreatedAt )}", row ), small: true ) );
+		column.Add( UiStyle.Muted( new Label( $"{from} → {to} · {Toasts.TypeTitle( m.Type )}{(m.TaskId is { } taskId ? $" · #{taskId}" : "")} · {UiStyle.Ago( m.CreatedAt )}", row ) { WordWrap = true }, small: true ) );
 		if ( !string.IsNullOrEmpty( m.Subject ) )
 			column.Add( UiStyle.Bold( new Label( m.Subject, row ) { WordWrap = true } ) );
 		column.Add( new Label( m.Body ?? "", row ) { WordWrap = true } );

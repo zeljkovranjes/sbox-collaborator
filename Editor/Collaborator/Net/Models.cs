@@ -126,6 +126,15 @@ public sealed class TaskItem
 	public long Version { get; set; }
 	public bool Stale { get; set; }
 
+	/// <summary>The task's branch, or the one the server suggests (<c>task/42-boat-buoyancy</c>).</summary>
+	public string SuggestedBranch { get; set; }
+
+	/// <summary>The latest handoff note: where the previous owner got to.</summary>
+	public TaskNote LastHandoff { get; set; }
+
+	/// <summary>All notes (only filled by task_get).</summary>
+	public List<TaskNote> Notes { get; set; } = new();
+
 	public bool IsOpen => Status is not ("done");
 	public bool IsActive => Status is "claimed" or "in_progress" or "blocked" or "review";
 }
@@ -317,4 +326,87 @@ public sealed class EventActor
 {
 	public string DeveloperId { get; set; }
 	public string AgentId { get; set; }
+}
+
+public sealed class TaskNote
+{
+	public string Id { get; set; }
+	public long TaskId { get; set; }
+	public string Kind { get; set; }
+	public string AuthorId { get; set; }
+	public string AuthorName { get; set; }
+	public string Summary { get; set; }
+	public string Next { get; set; }
+	public string Gotchas { get; set; }
+	public List<string> Files { get; set; } = new();
+	public DateTimeOffset? CreatedAt { get; set; }
+}
+
+public sealed class CatchUpCounts
+{
+	public int Commits { get; set; }
+	public int Changes { get; set; }
+	public int Breaking { get; set; }
+	public int TasksCompleted { get; set; }
+	public int TasksClaimed { get; set; }
+	public int Decisions { get; set; }
+	public int Knowledge { get; set; }
+	public int Messages { get; set; }
+	public int FailedTests { get; set; }
+
+	public int Total => Commits + Changes + TasksCompleted + TasksClaimed + Decisions + Knowledge + Messages + FailedTests;
+}
+
+/// <summary>What changed while you were away (team_catch_up).</summary>
+public sealed class CatchUp
+{
+	public DateTimeOffset? Since { get; set; }
+	public DateTimeOffset? Until { get; set; }
+	public string Summary { get; set; }
+	public CatchUpCounts Counts { get; set; } = new();
+}
+
+public sealed class FileHistoryCommit
+{
+	public string Sha { get; set; }
+	public string ShortSha { get; set; }
+	public string Message { get; set; }
+	public string Author { get; set; }
+	public string DeveloperId { get; set; }
+	public DateTimeOffset? At { get; set; }
+	public string Branch { get; set; }
+	public long? TaskId { get; set; }
+	public string Url { get; set; }
+	public string Change { get; set; }
+
+	public string Headline => (Message ?? "").Split( '\n' )[0];
+	public string Short => !string.IsNullOrEmpty( ShortSha ) ? ShortSha : Sha?.Length > 7 ? Sha[..7] : Sha;
+}
+
+public sealed class FileHistoryChange
+{
+	public string Id { get; set; }
+	public string Summary { get; set; }
+	public string DeveloperName { get; set; }
+	public DateTimeOffset? CompletedAt { get; set; }
+	public bool Breaking { get; set; }
+	public long? TaskId { get; set; }
+}
+
+public sealed class FileHistoryTask
+{
+	public long Id { get; set; }
+	public string Title { get; set; }
+	public string Status { get; set; }
+	public string OwnerName { get; set; }
+}
+
+/// <summary>Who touched a file or folder, when and why (file_history).</summary>
+public sealed class FileHistory
+{
+	public string Path { get; set; }
+	public List<FileHistoryCommit> Commits { get; set; } = new();
+	public List<FileHistoryChange> Changes { get; set; } = new();
+	public List<FileHistoryTask> Tasks { get; set; } = new();
+	public List<Reservation> Reservations { get; set; } = new();
 }

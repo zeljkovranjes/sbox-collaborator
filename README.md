@@ -1,72 +1,59 @@
-# Collaborator
+<p align="center"><img src="logo.png" width="96" alt=""></p>
 
-An s&box editor library that connects the editor to a self-hosted Collaborator server
-(`02_Server`). You see the same shared state your coding agents see: who is online, what each
-person's agents are working on, the task board, file and asset reservations, messages, test
-results and recent commits.
+# Collaborator for s&box
 
-## Install
+See what your teammates and their coding agents are doing – right inside the s&box editor.
+Tasks, file reservations, messages, test results and "what changed while you were away",
+shared through your team's [Collaborator server](https://github.com/zeljkovranjes/sbox-collaborator-server).
 
-Copy (or clone, or symlink) this folder into your project's `Libraries/` folder:
+## Setup (2 minutes)
 
-```
-<your project>/Libraries/collaborator/collaborator.sbproj
-```
+You need: the **server address** and a **server key** from whoever runs your team's server, and a
+GitHub account.
 
-The editor picks it up and compiles it; it then shows in **Library Manager**. Open
-**View ▸ Collaborator**: it opens in its own window (dark title bar, Collaborator logo, minimise /
-maximise / close) and remembers its size and position. The library is editor-only and adds nothing to
-your game.
+1. **Add the library to your project.** Copy (or `git clone`) this folder into your s&box
+   project's `Libraries` folder, so you have `Libraries/collaborator/collaborator.sbproj`.
+   Open the project in s&box – it compiles the library automatically.
+2. **Open the window:** **View ▸ Collaborator**.
+3. **Enter the server address**, e.g. `mcp.example.com`, and click *Continue*.
+4. **Paste the server key** you were given (`sbj_…`) and click *Continue*.
+   (Already have an account? Click *I already have an account*.)
+5. **Click *Login with GitHub*.** Your browser opens – log in and you're done. The editor
+   connects by itself.
 
-## Sign in
+That's it. Next time you open s&box you're signed in automatically.
 
-The first time, the window walks you through three steps:
+## Everyday use
 
-1. **Server**: the address of your team's server, for example `mcp.example.com` or `192.168.1.20:8080`.
-   HTTPS is used unless you typed `http://`. Plain HTTP is only accepted for IP addresses and
-   `localhost`.
-2. **Server key**: the join key (`sbj_…`) the server admin gave you. If you already have an
-   account, choose *I already have an account*.
-3. **GitHub**: click *Login with GitHub*. Your browser opens, and after you approve, the editor
-   receives its own personal access key. There is nothing to copy.
+| you want to… | do this |
+|---|---|
+| see who's online and what they're doing | the **Home** tab |
+| know what changed since you last looked | the *While you were away* card on Home, or **⋯ ▸ Catch me up** |
+| take a task | **Tasks** tab ▸ click a task ▸ *Claim* (the branch command is copied for you) |
+| stop mid-task and leave a note | open your task ▸ *Hand off…* |
+| stop teammates editing a file you're changing | right-click it in the Asset Browser ▸ **Collaborator ▸ Reserve file for editing** |
+| see who touched a file | right-click it ▸ **Collaborator ▸ History…** |
+| message a teammate | the **Messages** tab |
+| log a playtest by hand | the **Tests** tab |
 
-Only the server address and your personal access key are stored. They live in your editor
-settings, outside every project, so they never end up in a repository. The server key is not
-stored. *Use an access key instead* lets you paste a key (`sbc_…`) from the dashboard.
+**Happens automatically** (turn off in the ⚙ tab):
+- scenes and prefabs you have open are reserved, and released when you close them;
+- when your code breaks or compiles again, the team sees it;
+- playtests are logged, with any errors that happened while you played;
+- you get a warning when you open or change something a teammate has reserved.
 
-Each s&box project remembers which server project it belongs to. A project whose package ident
-matches a server project is linked automatically.
+## Good to know
 
-## What it does
+- Nothing is ever locked – reservations warn, they don't block.
+- Your personal key is stored encrypted outside your project (Windows DPAPI, macOS Keychain,
+  Linux keyring, or an encrypted file), so it can never end up in git. The server key is not
+  stored at all.
+- Lost your connection? The window shows it and reconnects by itself.
+- Sign out or switch project from the **⋯** menu.
 
-- **Home**: blockers, who is online and what their agents are doing (task, branch, files), tasks
-  in progress, reserved files, recent changes and commits, and the last test result.
-- **Tasks**: the shared board. You can claim, start, block, release, complete and create tasks.
-- **Files**: reserve a file or a folder (ending in `/`) before a big edit, and see who holds what.
-  Reservations are advisory: they warn and never lock.
-- **Messages**: unread messages first, which you can acknowledge. You can send to one teammate or
-  to everyone.
-- **Activity**: the team's feed, grouped by day.
-- **Tests**: log a playtest (pass/fail, scene, errors). A failure warns the team.
-- **Asset browser**: right-click ▸ *Collaborator* to reserve, release, or ask who's editing.
-- **Warnings**: a toast appears when you open or change a file a teammate has reserved, when
-  someone messages you, when a build breaks, and when a teammate publishes a breaking change.
-- **Presence**: the editor shows up as an `sbox-editor` agent with your branch and open scene.
-- **Asset sync**: uploads asset paths and their references (model → materials → textures) so
-  agents can ask what uses what. File contents are never uploaded. You can turn it off under
-  Settings.
+## For developers
 
-Updates arrive live over the server's event stream. If the stream is down, the window polls instead.
-
-## Development
-
-`dotnet build dev/CompileCheck.csproj` compiles `Editor/` against your installed s&box
-(set `SboxRoot` if s&box isn't in the default Steam folder). The in-editor compile is the
-authoritative check.
-
-**Editor gate** (the real test): `powershell -ExecutionPolicy Bypass -File dev\editor-gate\run_editor_gate.ps1`
-starts a throwaway Collaborator server, opens a scratch project in the real s&box editor with this
-library, and runs 34 end-to-end checks: sign-in, live teammate sync, reservation warnings, every
-action, every page at normal and narrow widths, the server going down and coming back, and sign-out.
-It stops at the first compile error, exception, server error or failed check. See
-[dev/editor-gate/README.md](dev/editor-gate/README.md).
+- `dotnet build dev/CompileCheck.csproj` – compiles the library against your installed s&box.
+- `powershell -ExecutionPolicy Bypass -File dev\editor-gate\run_editor_gate.ps1` – the full
+  end-to-end test in the real editor against a throwaway server (needs the server repo next to
+  this one). See [dev/editor-gate/README.md](dev/editor-gate/README.md).

@@ -189,13 +189,15 @@ public static class EditorGate
 		return answered;
 	}
 
-	private static async Task Screenshot( string name, Action prepare = null )
+	/// <summary>Asks the driver for a picture of a window (the main Collaborator window by default).</summary>
+	private static async Task Screenshot( string name, Action prepare = null, string windowTitle = null )
 	{
 		await EditorThread.SwitchToMainThread();
 		prepare?.Invoke(); // re-assert what the picture should show
 		await Frames( 700 ); // let layout and paint settle
 		var target = Path.Combine( _outDir, name + ".png" );
-		if ( await Request( "shot_" + name, target, 10 ) && File.Exists( target ) )
+		var payload = windowTitle is null ? target : $"{target}|{windowTitle}";
+		if ( await Request( "shot_" + name, payload, 10 ) && File.Exists( target ) )
 			Result.Screenshots.Add( name + ".png" );
 		else
 			Result.Notes.Add( $"screenshot {name} was not captured" );
@@ -242,6 +244,9 @@ public static class EditorGate
 		await Task.Delay( 15000 );
 		Environment.Exit( Result.Passed ? 0 : 1 ); // backstop when Quit did not end the process
 	}
+
+	/// <summary>Reservations the editor made on its own for open scenes/prefabs (not the test's).</summary>
+	private static bool IsAutoReserved( Reservation r ) => r.Reason == EditorAutomation.OpenReason || EditorAutomation.AutoReserved.Contains( r.Path, StringComparer.OrdinalIgnoreCase );
 
 	private static string Env( string name ) => Environment.GetEnvironmentVariable( name ) ?? "";
 
@@ -320,7 +325,42 @@ public static class EditorGate
 		} );
 
 		string token = null;
-		if ( !await Step( "signin.device_flow", async () =>
+		var realGitHub = Env( "COLLAB_GATE_REAL_GITHUB" ) == "1";
+		if ( realGitHub && !await Step( "signin.github_real", async () =>
+		{
+			// A person finishes the GitHub login in the browser that opens (the real product path).
+			var start = await probe.PostAsync<DeviceStart>( "/api/auth/device", new { clientName = $"s&box editor on {Environment.MachineName}", clientType = CollabSession.ClientType, serverKey } );
+			Expect( !string.IsNullOrEmpty( start?.VerificationUriComplete ), "no verification URL" );
+			await EditorThread.SwitchToMainThread();
+			Browser.Open( start.VerificationUriComplete );
+			Note( $"waiting up to 240 s for a GitHub login in the browser (code {start.UserCode})" );
+			var interval = Math.Max( 2, start.Interval );
+			var watch = Stopwatch.StartNew();
+			while ( watch.Elapsed.TotalSeconds < 240 )
+			{
+				await Task.Delay( TimeSpan.FromSeconds( interval ) );
+				try
+				{
+					var granted = await probe.PostAsync<DeviceToken>( "/api/auth/device/token", new { deviceCode = start.DeviceCode } );
+					if ( granted?.Token?.StartsWith( "sbc_" ) == true )
+					{
+						token = granted.Token;
+						return $"GitHub login completed in {watch.Elapsed.TotalSeconds:0} s; key for {granted.Developer?.Name}";
+					}
+				}
+				catch ( CollabException e ) when ( e.Code is "authorization_pending" )
+				{
+				}
+				catch ( CollabException e ) when ( e.Code is "slow_down" )
+				{
+					interval += 5;
+				}
+			}
+			throw new GateFailure( "nobody completed the GitHub login within 240 s" );
+		} ) )
+			return;
+
+		if ( !realGitHub && !await Step( "signin.device_flow", async () =>
 		{
 			var start = await probe.PostAsync<DeviceStart>( "/api/auth/device", new { clientName = $"s&box editor on {Environment.MachineName}", clientType = CollabSession.ClientType } );
 			Expect( !string.IsNullOrEmpty( start?.DeviceCode ) && !string.IsNullOrEmpty( start.UserCode ), "no device code" );
@@ -452,7 +492,7 @@ public static class EditorGate
 			Expect( clash is not null && clash.Reserved.Count == 0 && clash.Conflicts.Count == 1, "reserving inside the teammate's folder was not refused" );
 			var check = await CollabSession.CheckConflictAsync( new[] { "Assets/weather/storm.vmat" } );
 			Expect( check is not null && !check.Clear, "conflict check says clear for a reserved file" );
-			var seen = await WaitFor( () => CollabSession.Reservations.Count( r => r.DeveloperId == CollabSession.MyId ) == 2, 10 );
+			var seen = await WaitFor( () => CollabSession.Reservations.Count( r => r.DeveloperId == CollabSession.MyId && !IsAutoReserved( r ) ) == 2, 10 );
 			Expect( seen, "own reservations not listed" );
 			return "reserved 2, teammate folder refused, conflict check warns";
 		} );
@@ -489,6 +529,218 @@ public static class EditorGate
 			var found = await mate.ToolAsync<List<JsonElement>>( "asset_search", new { project = projectId, limit = 50 } );
 			Expect( found.Count > 0, "server has no assets after the sync" );
 			return $"{AssetSync.LastResult}; server lists {found.Count}";
+		} );
+
+		// 7b. v1.1: branch suggestion, handoff, catch-up, file history, automation, key encryption.
+		await Step( "tasks.branch_suggestion", async () =>
+		{
+			await EditorThread.SwitchToMainThread();
+			var before = Toasts.Recent.Count;
+			var created = await CollabSession.CreateTaskAsync( "Sail trim UI", "Gate: branch suggestion", "normal" );
+			Expect( created is not null, $"create failed: {CollabSession.StatusText}" );
+			var claimed = await CollabSession.ClaimTaskAsync( created );
+			Expect( claimed is not null, $"claim failed: {CollabSession.StatusText}" );
+			Expect( claimed.SuggestedBranch?.StartsWith( $"task/{claimed.Id}" ) == true, $"suggested branch is '{claimed.SuggestedBranch}', expected task/{claimed.Id}-…" );
+			var toasted = await WaitFor( () => Toasts.Recent.Skip( before ).Any( t => t.Title == $"Claimed #{claimed.Id}" && t.Subtitle.Contains( claimed.SuggestedBranch ) ), 5 );
+			Expect( toasted, "no toast with the branch after claiming" );
+			Expect( CollabSession.BranchCommand( claimed ) == $"git switch -c {claimed.SuggestedBranch}", $"branch command is '{CollabSession.BranchCommand( claimed )}'" );
+			await CollabSession.ReleaseTaskAsync( claimed );
+			return $"#{claimed.Id} → {claimed.SuggestedBranch}";
+		} );
+
+		long handedTask = 0;
+		await Step( "tasks.handoff_received", async () =>
+		{
+			var task = await mate.ToolAsync<TaskItem>( "task_create", new { project = projectId, title = "Ocean foam shader", priority = "normal" } );
+			await mate.ToolAsync<JsonElement>( "task_claim", new { taskId = task.Id } );
+			await EditorThread.SwitchToMainThread();
+			var before = Toasts.Recent.Count;
+			await mate.ToolAsync<TaskItem>( "task_handoff", new { taskId = task.Id, summary = "Foam mask works; edge fade not started.", next = "Add the depth fade in Ocean.shader.", gotchas = "Needs the depth texture enabled on the camera.", to = CollabSession.MyId } );
+			handedTask = task.Id;
+			var toasted = await WaitFor( () => Toasts.Recent.Skip( before ).Any( t => t.Title.Contains( $"task #{task.Id}" ) && t.Title.Contains( "to you" ) ), 10 );
+			Expect( toasted, "no 'handed task to you' toast" );
+			var full = await CollabSession.GetTaskAsync( task.Id );
+			Expect( full?.LastHandoff?.Summary?.Contains( "Foam mask works" ) == true, "handoff note not on the task" );
+			Expect( full.Notes?.Any( n => n.Kind == "handoff" ) == true, "task_get has no handoff note" );
+			var listed = await WaitFor( () => CollabSession.Tasks.Any( t => t.Id == task.Id && t.LastHandoff is not null ), 10 );
+			Expect( listed, "the task list does not show the handoff" );
+			return $"#{task.Id} handed over with a note";
+		} );
+		if ( handedTask > 0 )
+			await Screenshot( "14_task_handoff", () => _dock.Main.ShowTask( handedTask ) );
+
+		await Step( "catch_up.summary", async () =>
+		{
+			await EditorThread.SwitchToMainThread();
+			var result = await CollabSession.LoadCatchUpAsync();
+			Expect( result is not null, $"team_catch_up failed: {CollabSession.StatusText}" );
+			Expect( (result.Counts?.Total ?? 0) > 0, "catch-up counted nothing although the teammate was busy" );
+			Expect( !string.IsNullOrWhiteSpace( result.Summary ), "empty summary" );
+			Expect( result.Summary.Contains( "Teammate" ) || result.Summary.Contains( "Storm" ) || result.Summary.Contains( "foam", StringComparison.OrdinalIgnoreCase ), "summary doesn't mention the teammate's work" );
+			Expect( CollabSession.CatchUp is not null, "the Home card has nothing to show" );
+			return $"{result.Counts.Total} items";
+		} );
+		await Screenshot( "15_catch_up", () => _dock.Main.Show( MainView.HomePage ) );
+
+		const string historyPath = "Assets/weather/storm.vmat";
+		await Step( "history.file", async () =>
+		{
+			var secret = Env( "COLLAB_GATE_WEBHOOK_SECRET" );
+			Expect( !string.IsNullOrEmpty( secret ), "COLLAB_GATE_WEBHOOK_SECRET not set by the driver" );
+			var sha = Convert.ToHexString( System.Security.Cryptography.RandomNumberGenerator.GetBytes( 20 ) ).ToLowerInvariant();
+			var push = new
+			{
+				@ref = "refs/heads/main",
+				before = new string( '0', 40 ),
+				after = sha,
+				created = false,
+				deleted = false,
+				forced = false,
+				repository = new { full_name = "gatefixture/collabgate", default_branch = "main" },
+				sender = new { login = "mategh" },
+				pusher = new { name = "mategh" },
+				commits = new[]
+				{
+					new
+					{
+						id = sha,
+						message = "Darker storm material",
+						timestamp = DateTimeOffset.UtcNow.ToString( "o" ),
+						url = $"https://github.com/gatefixture/collabgate/commit/{sha}",
+						author = new { name = "Teammate", username = "mategh" },
+						added = Array.Empty<string>(),
+						modified = new[] { historyPath },
+						removed = Array.Empty<string>(),
+					},
+				},
+			};
+			var body = JsonSerializer.Serialize( push );
+			var key = System.Text.Encoding.UTF8.GetBytes( secret );
+			var signature = "sha256=" + Convert.ToHexString( System.Security.Cryptography.HMACSHA256.HashData( key, System.Text.Encoding.UTF8.GetBytes( body ) ) ).ToLowerInvariant();
+			using var http = new System.Net.Http.HttpClient();
+			using var request = new System.Net.Http.HttpRequestMessage( System.Net.Http.HttpMethod.Post, $"{probe.BaseUrl}/webhooks/github" );
+			request.Headers.Add( "X-GitHub-Event", "push" );
+			request.Headers.Add( "X-GitHub-Delivery", Guid.NewGuid().ToString() );
+			request.Headers.Add( "X-Hub-Signature-256", signature );
+			request.Content = new System.Net.Http.StringContent( body, System.Text.Encoding.UTF8, "application/json" );
+			var response = await http.SendAsync( request );
+			var answer = await response.Content.ReadAsStringAsync();
+			Expect( response.IsSuccessStatusCode, $"webhook answered {(int)response.StatusCode}: {answer}" );
+			Expect( answer.Contains( "processed" ), $"webhook not processed: {answer}" );
+
+			var history = await CollabSession.FileHistoryAsync( historyPath );
+			Expect( history?.Commits?.Any( c => c.Sha == sha ) == true, "file_history does not list the pushed commit" );
+			Expect( history.Reservations.Any( r => r.Path == "Assets/weather/" ), "file_history misses the teammate's reservation" );
+			await EditorThread.SwitchToMainThread();
+			HistoryWindow.Open( historyPath );
+			var loaded = await WaitFor( () => HistoryWindow.Current?.History is not null, 10 );
+			Expect( loaded, $"history window did not load: {HistoryWindow.Current?.Error}" );
+			return $"{history.Commits.Count} commit(s), {history.Reservations.Count} reservation(s), {history.Tasks.Count} task(s)";
+		} );
+		await Screenshot( "16_history", windowTitle: $"{HistoryWindow.TitlePrefix}: storm.vmat" );
+		HistoryWindow.Current?.GetWindow()?.Close();
+
+		await Step( "auto.reserve_open_scene", async () =>
+		{
+			await EditorThread.SwitchToMainThread();
+			Expect( Settings.AutoReserveOpen, "auto-reserve is switched off" );
+			var sceneAsset = AssetSystem.All.FirstOrDefault( a => a.Path?.EndsWith( ".scene", StringComparison.OrdinalIgnoreCase ) == true && ProjectPaths.ToRepo( a.AbsolutePath ) is not null );
+			Expect( sceneAsset is not null, "the scratch project has no scene" );
+			var repo = ProjectPaths.ToRepo( sceneAsset.AbsolutePath );
+
+			// Start from "closed" so both directions are exercised.
+			var open = SceneEditorSession.All.FirstOrDefault( x => string.Equals( ProjectPaths.FromEditorPath( x.Scene?.Source?.ResourcePath ), repo, StringComparison.OrdinalIgnoreCase ) );
+			if ( open is not null )
+			{
+				open.Destroy();
+				var releasedFirst = await WaitFor( () => !EditorAutomation.AutoReserved.Contains( repo, StringComparer.OrdinalIgnoreCase ), 10 );
+				Expect( releasedFirst, "closing the already-open scene did not release it" );
+			}
+
+			EditorScene.OpenScene( sceneAsset.LoadResource<SceneFile>() );
+			var reserved = await WaitFor( () => EditorAutomation.AutoReserved.Contains( repo, StringComparer.OrdinalIgnoreCase )
+				&& CollabSession.Reservations.Any( r => r.DeveloperId == CollabSession.MyId && string.Equals( r.Path, repo, StringComparison.OrdinalIgnoreCase ) ), 15 );
+			Expect( reserved, $"opening {repo} did not reserve it" );
+			var check = await mate.ToolAsync<ConflictCheck>( "file_check_conflict", new { project = projectId, paths = new[] { repo } } );
+			Expect( !check.Clear, "the teammate is not warned about the open scene" );
+
+			await EditorThread.SwitchToMainThread();
+			var session = SceneEditorSession.All.FirstOrDefault( x => string.Equals( ProjectPaths.FromEditorPath( x.Scene?.Source?.ResourcePath ), repo, StringComparison.OrdinalIgnoreCase ) );
+			Expect( session is not null, "no editor session for the opened scene" );
+			session.Destroy();
+			var released = await WaitFor( () => !EditorAutomation.AutoReserved.Contains( repo, StringComparer.OrdinalIgnoreCase ), 10 );
+			Expect( released, "closing the scene did not release it" );
+			var gone = await WaitFor( () => !CollabSession.Reservations.Any( r => r.DeveloperId == CollabSession.MyId && string.Equals( r.Path, repo, StringComparison.OrdinalIgnoreCase ) ), 10 );
+			Expect( gone, "the server still lists the reservation after closing" );
+			EditorScene.OpenScene( sceneAsset.LoadResource<SceneFile>() ); // leave a scene open for the playtest
+			return $"{repo}: reserved on open, released on close";
+		} );
+
+		await Step( "auto.compile_result", async () =>
+		{
+			await EditorThread.SwitchToMainThread();
+			Expect( Settings.ShareCompile, "compile sharing is switched off" );
+			var code = Path.Combine( ProjectPaths.Root, "Code" );
+			Directory.CreateDirectory( code );
+			var file = Path.Combine( code, "CollabGateBroken.cs" );
+			var before = EditorAutomation.LastCompilePost;
+			try
+			{
+				await File.WriteAllTextAsync( file, "public class CollabGateBroken { public void M() { int x = ; } }\n" );
+				var broken = await WaitFor( () => EditorAutomation.LastCompilePost is { Status: "error" } post && post != before, 90 );
+				Expect( broken, "no 'error' compile result was posted for a broken file" );
+				var errors = EditorAutomation.LastCompilePost.Errors;
+				Expect( errors.Any( e => e.Contains( "CollabGateBroken.cs" ) ), $"errors don't name the file: {string.Join( " | ", errors )}" );
+				var seen = await mate.ToolAsync<List<TestRun>>( "test_get_recent", new { project = projectId, limit = 5 } );
+				Expect( seen.Any( t => t.Build == "editor-compile" && t.Status == "error" ), "the teammate can't see the broken compile" );
+			}
+			finally
+			{
+				File.Delete( file );
+			}
+			var fixedUp = await WaitFor( () => EditorAutomation.LastCompilePost is { Status: "passed" }, 90 );
+			Expect( fixedUp, "no 'passed' compile result after removing the broken file" );
+			return "broken → error posted with the file name; fixed → passed posted";
+		} );
+
+		await Step( "auto.playtest_result", async () =>
+		{
+			await EditorThread.SwitchToMainThread();
+			Expect( Settings.SharePlaytests, "playtest sharing is switched off" );
+			Expect( SceneEditorSession.Active is not null, "no scene open to play" );
+			var before = EditorAutomation.LastPlaytestPost;
+			EditorScene.Play( SceneEditorSession.Active );
+			var playing = await WaitFor( () => Game.IsPlaying, 30 );
+			Expect( playing, "play mode did not start" );
+			await Task.Delay( 1500 );
+			await EditorThread.SwitchToMainThread();
+			Log.Error( "GatePlaytestError: the storm spawner threw" );
+			await Task.Delay( 5000 );
+			await EditorThread.SwitchToMainThread();
+			EditorScene.Stop();
+			var posted = await WaitFor( () => EditorAutomation.LastPlaytestPost is { } latest && latest != before, 20 );
+			Expect( posted, "no playtest result posted after stopping" );
+			var run = EditorAutomation.LastPlaytestPost;
+			Expect( run.Build == "playtest", $"build is '{run.Build}'" );
+			Expect( run.Status == "failed" && run.Errors.Any( e => e.Contains( "GatePlaytestError" ) ), $"the error logged while playing was not captured (status {run.Status}, errors: {string.Join( " | ", run.Errors )})" );
+			return $"{run.Description}: {run.Status}, {run.Errors.Count} error(s)";
+		} );
+
+		await Step( "security.key_encrypted", async () =>
+		{
+			await Task.CompletedTask;
+			const string sample = "sbc_000000000000_gateSampleSecretValue1234";
+			var stored = SecureStore.Protect( sample );
+			Expect( SecureStore.IsProtected( stored ), $"the key was not protected ({SecureStore.Method})" );
+			Expect( !stored.Contains( sample ), "the stored value contains the plain key" );
+			Expect( SecureStore.Unprotect( stored ) == sample, "decrypting did not give the key back" );
+			Expect( SecureStore.Unprotect( sample ) == sample, "a plain (older) value does not pass through" );
+			// The portable fallback used on macOS/Linux machines without a keyring.
+			var file = SecureStore.ProtectWithKeyFile( sample );
+			Expect( file is not null && file.StartsWith( "aes:" ) && !file.Contains( sample ), "the key-file fallback did not encrypt" );
+			Expect( SecureStore.UnprotectWithKeyFile( file ) == sample, "the key-file fallback did not decrypt" );
+			Expect( SecureStore.Unprotect( file ) == sample, "an aes: value does not decrypt through Unprotect" );
+			return $"{SecureStore.Method}: stored as {stored[..Math.Min( 12, stored.Length )]}…; key-file fallback ok";
 		} );
 
 		// 8. Every page renders with real data.
@@ -567,7 +819,7 @@ public static class EditorGate
 			Expect( done?.Status == "done", $"complete failed: {CollabSession.StatusText}" );
 			await CollabSession.ReleaseAsync( new[] { "Code/BoatController.cs", "Assets/ships/" } );
 			await CollabSession.RefreshAsync();
-			Expect( !CollabSession.Reservations.Any( r => r.DeveloperId == CollabSession.MyId ), "own reservations still active" );
+			Expect( !CollabSession.Reservations.Any( r => r.DeveloperId == CollabSession.MyId && !IsAutoReserved( r ) ), "own reservations still active" );
 			return $"#{mine.Id} done, reservations released";
 		} );
 

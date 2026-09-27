@@ -117,6 +117,11 @@ public static class AssetGuard
 			menu.AddOption( "Release my reservation", "lock_open", () => _ = CollabSession.ReleaseAsync( mine.Select( r => r.Path ) ) );
 
 		menu.AddOption( "Who's editing this?", "person_search", () => _ = WhoAsync( paths ) );
+		if ( paths.Count == 1 )
+		{
+			var path = paths[0];
+			menu.AddOption( "History…", "history", () => UI.HistoryWindow.Open( path ) );
+		}
 	}
 
 	private static async Task ReserveAsync( List<string> paths )

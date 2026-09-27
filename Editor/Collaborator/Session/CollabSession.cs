@@ -98,6 +98,7 @@ public static partial class CollabSession
 					_ = RefreshAsync();
 				AssetGuard.Tick();
 				AssetSync.Tick();
+				EditorAutomation.Tick();
 				break;
 
 			case ConnectionState.Offline:
@@ -147,6 +148,7 @@ public static partial class CollabSession
 
 	public static void SignOut()
 	{
+		EditorAutomation.OnDisconnecting( Client, Project?.Id );
 		StopStream();
 		Settings.ClearCredentials();
 		Client = null;
@@ -160,6 +162,7 @@ public static partial class CollabSession
 		Activity = new();
 		Tests = new();
 		Notices = new();
+		CatchUp = null;
 		State = ConnectionState.SignedOut;
 		BumpData();
 		SetStatus( "Signed out." );
@@ -271,6 +274,8 @@ public static partial class CollabSession
 	{
 		if ( Client is null || project is null )
 			return;
+		if ( Project is not null && Project.Id != project.Id )
+			EditorAutomation.OnDisconnecting( Client, Project.Id );
 		StopStream();
 		Project = project;
 		Settings.ProjectId = project.Id;
@@ -295,8 +300,10 @@ public static partial class CollabSession
 			State = ConnectionState.Online;
 			SetStatus( $"Connected to {project.Title}.", Theme.Green );
 			StartStream();
+			EditorAutomation.OnConnected();
 			await RefreshAsync();
 			AssetSync.OnConnected();
+			_ = LoadCatchUpAsync( onlyIfNews: true );
 		}
 		catch ( CollabException e )
 		{
@@ -305,8 +312,18 @@ public static partial class CollabSession
 		}
 	}
 
+	/// <summary>
+	/// Server notices are written for agents ("call message_get_unread"). The editor already shows
+	/// unread messages as a badge and toasts, so only the teammate warnings are kept.
+	/// </summary>
+	private static List<string> ForPeople( List<string> notices )
+		=> notices?.Where( n => !string.IsNullOrWhiteSpace( n ) && !n.Contains( "message_get_unread" ) ).Select( n => n.TrimStart( '⚠', ' ' ) ).ToList() ?? new();
+
 	private static void OnNotices( List<string> notices )
 	{
+		notices = ForPeople( notices );
+		if ( notices.Count == 0 )
+			return;
 		EditorThread.Post( () =>
 		{
 			Notices = notices;
@@ -392,6 +409,9 @@ public static partial class CollabSession
 				case "build_broken":
 					if ( !mine )
 						Toasts.Show( "Build broken", DescribeTest( e.Data ), "error", Theme.Red, 12 );
+					break;
+				case "task_handoff":
+					// The handoff message (message_received) carries the toast; refresh shows the note.
 					break;
 				case "file_reserved":
 				{
@@ -561,8 +581,94 @@ public static partial class CollabSession
 		}
 	}
 
-	public static Task<TaskItem> ClaimTaskAsync( TaskItem task, bool force = false )
-		=> RunAsync( $"Claiming #{task.Id}…", c => c.ToolAsync<TaskItem>( "task_claim", new { taskId = task.Id, force = force ? true : (bool?)null, branch = ProjectPaths.GitBranch() } ), $"Claimed #{task.Id} {task.Title}." );
+	/// <summary>
+	/// Claims a task. The branch to work on is copied as a git command and shown in a toast. The
+	/// current branch is only sent when it is a feature branch (not main/master/the default), so
+	/// the server can suggest a proper task branch otherwise.
+	/// </summary>
+	public static async Task<TaskItem> ClaimTaskAsync( TaskItem task, bool force = false, string reason = null )
+	{
+		var current = ProjectPaths.GitBranch();
+		var isDefault = current is null || current is "main" or "master" or "develop" || string.Equals( current, Project?.DefaultBranch, StringComparison.OrdinalIgnoreCase );
+		var claimed = await RunAsync( $"Claiming #{task.Id}…", c => c.ToolAsync<TaskItem>( "task_claim", new
+		{
+			taskId = task.Id,
+			force = force ? true : (bool?)null,
+			reason = force ? reason : null,
+			branch = isDefault ? null : current,
+		} ), $"Claimed #{task.Id} {task.Title}." );
+		if ( claimed is not null && !string.IsNullOrEmpty( claimed.SuggestedBranch ) )
+		{
+			var command = BranchCommand( claimed );
+			CopyToClipboard( command );
+			Toasts.Show( $"Claimed #{claimed.Id}", $"Branch: {claimed.SuggestedBranch} ({command} copied)", "assignment_ind", Theme.Green, 8 );
+		}
+		return claimed;
+	}
+
+	/// <summary>The git command to get onto the task's branch (create it unless you're already there).</summary>
+	public static string BranchCommand( TaskItem task )
+	{
+		var branch = task.SuggestedBranch ?? task.Branch;
+		if ( string.IsNullOrEmpty( branch ) )
+			return null;
+		return string.Equals( ProjectPaths.GitBranch(), branch, StringComparison.Ordinal ) ? $"git pull" : !string.IsNullOrEmpty( task.Branch ) ? $"git switch {branch}" : $"git switch -c {branch}";
+	}
+
+	public static void CopyToClipboard( string text )
+	{
+		if ( string.IsNullOrEmpty( text ) )
+			return;
+		try
+		{
+			EditorUtility.Clipboard.Copy( text );
+		}
+		catch ( Exception )
+		{
+		}
+	}
+
+	/// <summary>Stops working on a task and leaves a note for whoever picks it up next.</summary>
+	public static Task<TaskItem> HandOffAsync( TaskItem task, string summary, string next, string gotchas, string to )
+		=> RunAsync( $"Handing off #{task.Id}…", c => c.ToolAsync<TaskItem>( "task_handoff", new
+		{
+			taskId = task.Id,
+			summary,
+			next = string.IsNullOrWhiteSpace( next ) ? null : next,
+			gotchas = string.IsNullOrWhiteSpace( gotchas ) ? null : gotchas,
+			to = string.IsNullOrEmpty( to ) ? null : to,
+		} ), to is null ? $"Handed off #{task.Id}; it's back on the board." : $"Handed #{task.Id} over." );
+
+	/// <summary>One task with its notes (task_get).</summary>
+	public static async Task<TaskItem> GetTaskAsync( long id )
+	{
+		var client = Client;
+		if ( client is null )
+			return null;
+		try
+		{
+			var task = await client.ToolAsync<TaskItem>( "task_get", new { taskId = id } );
+			await EditorThread.SwitchToMainThread();
+			return task;
+		}
+		catch ( CollabException )
+		{
+			await EditorThread.SwitchToMainThread();
+			return null;
+		}
+	}
+
+	/// <summary>Who touched a file or folder (file_history).</summary>
+	public static async Task<FileHistory> FileHistoryAsync( string path )
+	{
+		var client = Client;
+		var project = Project;
+		if ( client is null || project is null )
+			return null;
+		var history = await client.ToolAsync<FileHistory>( "file_history", new { project = project.Id, path, limit = 30 } );
+		await EditorThread.SwitchToMainThread();
+		return history;
+	}
 
 	public static Task<TaskItem> SetTaskStatusAsync( TaskItem task, string status )
 		=> RunAsync( $"Updating #{task.Id}…", c => c.ToolAsync<TaskItem>( "task_update", new { taskId = task.Id, status, expectedVersion = task.Version } ), $"#{task.Id} is now {TaskStatusText( status ).ToLowerInvariant()}." );
@@ -607,6 +713,50 @@ public static partial class CollabSession
 			branch = ProjectPaths.GitBranch(),
 			errors = errors is { Count: > 0 } ? errors : null,
 		} ), status == "passed" ? "Test logged: passed." : "Test logged: failed. The team was warned." );
+
+	// ------------------------------------------------------------------ catch-up
+
+	/// <summary>"While you were away": set after connecting when something happened, or on request.</summary>
+	public static CatchUp CatchUp { get; private set; }
+
+	public static bool CatchUpLoading { get; private set; }
+
+	/// <summary>Asks the server what changed since this developer last caught up.</summary>
+	public static async Task<CatchUp> LoadCatchUpAsync( bool onlyIfNews = false )
+	{
+		var client = Client;
+		var project = Project;
+		if ( client is null || project is null || CatchUpLoading )
+			return null;
+		CatchUpLoading = true;
+		Bump();
+		try
+		{
+			var result = await client.ToolAsync<CatchUp>( "team_catch_up", new { project = project.Id } );
+			await EditorThread.SwitchToMainThread();
+			if ( Project?.Id == project.Id && (!onlyIfNews || (result?.Counts?.Total ?? 0) > 0) )
+				CatchUp = result;
+			return result;
+		}
+		catch ( CollabException e )
+		{
+			await EditorThread.SwitchToMainThread();
+			if ( !onlyIfNews )
+				SetStatus( $"Couldn't load the catch-up: {e.Message}", Theme.Yellow );
+			return null;
+		}
+		finally
+		{
+			CatchUpLoading = false;
+			BumpData();
+		}
+	}
+
+	public static void DismissCatchUp()
+	{
+		CatchUp = null;
+		BumpData();
+	}
 
 	// ------------------------------------------------------------------ lookups
 

@@ -132,7 +132,7 @@ public static class UiStyle
 		if ( span.TotalSeconds < 45 )
 			return "just now";
 		if ( span.TotalMinutes < 60 )
-			return $"{(int)span.TotalMinutes}m ago";
+			return $"{Math.Max( 1, (int)span.TotalMinutes )}m ago";
 		if ( span.TotalHours < 24 )
 			return $"{(int)span.TotalHours}h ago";
 		if ( span.TotalDays < 7 )

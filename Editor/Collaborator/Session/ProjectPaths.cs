@@ -114,41 +114,92 @@ public static class ProjectPaths
 		return _branch;
 	}
 
-	private static string ReadBranch()
+	private static string _sha;
+	private static RealTimeSince _sinceSha = 1000;
+
+	/// <summary>The commit checked out (full sha), or null outside a git repository. Cached briefly.</summary>
+	public static string GitHeadSha()
 	{
+		if ( _sinceSha < 5 )
+			return _sha;
+		_sinceSha = 0;
+		_sha = null;
 		try
 		{
-			var dir = Root;
-			for ( var i = 0; i < 6 && !string.IsNullOrEmpty( dir ); i++ )
+			var gitDir = FindGitDir();
+			if ( gitDir is null )
+				return null;
+			var head = File.ReadAllText( Path.Combine( gitDir, "HEAD" ) ).Trim();
+			if ( !head.StartsWith( "ref: " ) )
+				return _sha = head.Length >= 40 ? head[..40] : null;
+			var reference = head[5..].Trim();
+			var loose = Path.Combine( gitDir, reference.Replace( '/', Path.DirectorySeparatorChar ) );
+			if ( File.Exists( loose ) )
+				return _sha = File.ReadAllText( loose ).Trim();
+			// Packed refs: "<sha> refs/heads/main" lines (worktrees share the common dir's file).
+			foreach ( var dir in new[] { gitDir, CommonDir( gitDir ) } )
 			{
-				var git = Path.Combine( dir, ".git" );
-				string head = null;
-				if ( Directory.Exists( git ) )
-					head = Path.Combine( git, "HEAD" );
-				else if ( File.Exists( git ) )
-				{
-					// Worktrees and submodules: ".git" is a file pointing at the real git dir.
-					var pointer = File.ReadAllText( git ).Trim();
-					if ( pointer.StartsWith( "gitdir:" ) )
-					{
-						var gitDir = pointer[7..].Trim();
-						if ( !Path.IsPathRooted( gitDir ) )
-							gitDir = Path.GetFullPath( Path.Combine( dir, gitDir ) );
-						head = Path.Combine( gitDir, "HEAD" );
-					}
-				}
-				if ( head is not null && File.Exists( head ) )
-				{
-					var text = File.ReadAllText( head ).Trim();
-					const string prefix = "ref: refs/heads/";
-					return text.StartsWith( prefix ) ? text[prefix.Length..] : text.Length >= 7 ? text[..7] : null;
-				}
-				dir = Path.GetDirectoryName( dir );
+				var packed = Path.Combine( dir, "packed-refs" );
+				if ( !File.Exists( packed ) )
+					continue;
+				foreach ( var line in File.ReadLines( packed ) )
+					if ( line.EndsWith( " " + reference ) && line.Length > 40 )
+						return _sha = line[..40];
 			}
 		}
 		catch ( Exception )
 		{
 		}
 		return null;
+	}
+
+	private static string CommonDir( string gitDir )
+	{
+		var common = Path.Combine( gitDir, "commondir" );
+		if ( !File.Exists( common ) )
+			return gitDir;
+		var rel = File.ReadAllText( common ).Trim();
+		return Path.IsPathRooted( rel ) ? rel : Path.GetFullPath( Path.Combine( gitDir, rel ) );
+	}
+
+	/// <summary>The project's .git directory (walking up; worktrees and submodules follow the "gitdir:" pointer).</summary>
+	private static string FindGitDir()
+	{
+		var dir = Root;
+		for ( var i = 0; i < 6 && !string.IsNullOrEmpty( dir ); i++ )
+		{
+			var git = Path.Combine( dir, ".git" );
+			if ( Directory.Exists( git ) )
+				return git;
+			if ( File.Exists( git ) )
+			{
+				var pointer = File.ReadAllText( git ).Trim();
+				if ( pointer.StartsWith( "gitdir:" ) )
+				{
+					var gitDir = pointer[7..].Trim();
+					return Path.IsPathRooted( gitDir ) ? gitDir : Path.GetFullPath( Path.Combine( dir, gitDir ) );
+				}
+			}
+			dir = Path.GetDirectoryName( dir );
+		}
+		return null;
+	}
+
+	private static string ReadBranch()
+	{
+		try
+		{
+			var gitDir = FindGitDir();
+			var head = gitDir is null ? null : Path.Combine( gitDir, "HEAD" );
+			if ( head is null || !File.Exists( head ) )
+				return null;
+			var text = File.ReadAllText( head ).Trim();
+			const string prefix = "ref: refs/heads/";
+			return text.StartsWith( prefix ) ? text[prefix.Length..] : text.Length >= 7 ? text[..7] : null;
+		}
+		catch ( Exception )
+		{
+			return null;
+		}
 	}
 }

@@ -62,12 +62,6 @@ public sealed class TasksPage : Page
 
 	private UiButton _newButton;
 
-	protected override void OnResize()
-	{
-		base.OnResize();
-		FitFilterBar();
-	}
-
 	/// <summary>Narrow docks: chips drop their labels and the button its text, so nothing is clipped.</summary>
 	private void FitFilterBar()
 	{
@@ -200,12 +194,27 @@ public sealed class TasksPage : Page
 			box.Layout.Add( UiStyle.Muted( new Label( $"Depends on {string.Join( ", ", t.DependsOn.Select( d => $"#{d}" ) )}", box ), small: true ) );
 		if ( !string.IsNullOrEmpty( t.CompletionSummary ) )
 			box.Layout.Add( UiStyle.Colored( new Label( t.CompletionSummary, box ) { WordWrap = true }, Theme.Green ) );
+		if ( t.LastHandoff is { } handoff )
+			box.Layout.Add( HandoffNote( box, handoff ) );
+		if ( t.Status != "done" && !string.IsNullOrEmpty( t.SuggestedBranch ) )
+		{
+			var branchRow = box.Layout.AddRow();
+			branchRow.Spacing = 6;
+			branchRow.Add( new IconLabel( box, "call_split", Theme.Green ) );
+			branchRow.Add( UiStyle.Mono( new Label( UiStyle.Breakable( t.SuggestedBranch ), box ) { WordWrap = true }, Theme.Green ), 1 );
+			var command = CollabSession.BranchCommand( t );
+			branchRow.Add( UiStyle.Icon( box, "content_copy", () =>
+			{
+				CollabSession.CopyToClipboard( command );
+				CollabSession.SetStatus( $"Copied: {command}", Theme.Green );
+			}, $"Copy “{command}”", 24 ) );
+		}
 
 		if ( !CollabSession.CanWrite )
 			return box;
 
-		var actions = box.Layout.AddRow();
-		actions.Spacing = 6;
+		// Buttons flow onto as many rows as the dock width needs (see Flow).
+		var actions = new List<Widget>();
 		var mine = t.OwnerId == CollabSession.MyId;
 		switch ( t.Status )
 		{
@@ -225,6 +234,7 @@ public sealed class TasksPage : Page
 						actions.Add( UiStyle.Secondary( box, "Blocked…", "block", () => AskBlock( t ) ) );
 					if ( t.Status == "in_progress" )
 						actions.Add( UiStyle.Secondary( box, "Review", "rate_review", () => _ = CollabSession.SetTaskStatusAsync( t, "review" ) ) );
+					actions.Add( UiStyle.Secondary( box, "Hand off…", "swap_horiz", () => HandoffDialog.Open( t ), "Stop here and leave a note for whoever continues" ) );
 					actions.Add( new UiButton( box, "Release", "undo", () => _ = CollabSession.ReleaseTaskAsync( t ), "Put the task back on the board" ) { Tint = Theme.TextLight } );
 				}
 				else
@@ -234,8 +244,60 @@ public sealed class TasksPage : Page
 				}
 				break;
 		}
-		actions.AddStretchCell();
+		Flow( box, actions, MathF.Max( 200, Width - 70 ) );
 		return box;
+	}
+
+	/// <summary>Adds <paramref name="items"/> in rows no wider than <paramref name="available"/> pixels.</summary>
+	private static void Flow( Widget box, List<Widget> items, float available )
+	{
+		Layout row = null;
+		var used = 0f;
+		foreach ( var item in items )
+		{
+			var width = item.FixedWidth > 0 && item.FixedWidth < 10000 ? item.FixedWidth : (item is Label label ? 6.6f * (label.Text?.Length ?? 0) : 120f);
+			if ( row is null || used + width > available )
+			{
+				row?.AddStretchCell();
+				row = box.Layout.AddRow();
+				row.Spacing = 6;
+				used = 0;
+			}
+			row.Add( item );
+			used += width + 6;
+		}
+		row?.AddStretchCell();
+	}
+
+	private float _builtForWidth;
+
+	protected override void OnResize()
+	{
+		base.OnResize();
+		FitFilterBar();
+		// Button rows depend on the width: rebuild when it changes noticeably.
+		if ( MathF.Abs( Width - _builtForWidth ) > 40 )
+		{
+			_builtForWidth = Width;
+			MarkDirty();
+		}
+	}
+
+	/// <summary>"Where I got to" from the previous owner, in a yellow-edged box.</summary>
+	public static Widget HandoffNote( Widget parent, TaskNote note )
+	{
+		var card = new Card( parent ) { Accent = Theme.Yellow };
+		card.Layout.Margin = new Sandbox.UI.Margin( 10, 8, 10, 8 );
+		card.Layout.Spacing = 3;
+		card.Header( "swap_horiz", $"Handoff from {note.AuthorName ?? note.AuthorId} · {UiStyle.Ago( note.CreatedAt )}", iconColor: Theme.Yellow );
+		card.Layout.Add( new Label( note.Summary ?? "", card ) { WordWrap = true } );
+		if ( !string.IsNullOrWhiteSpace( note.Next ) )
+			card.Layout.Add( UiStyle.Muted( new Label( $"Next: {note.Next}", card ) { WordWrap = true } ) );
+		if ( !string.IsNullOrWhiteSpace( note.Gotchas ) )
+			card.Layout.Add( UiStyle.Colored( new Label( $"Watch out: {note.Gotchas}", card ) { WordWrap = true }, Theme.Yellow ) );
+		if ( note.Files is { Count: > 0 } )
+			card.Layout.Add( UiStyle.Mono( new Label( UiStyle.Breakable( string.Join( ", ", note.Files.Take( 6 ) ) ), card ) { WordWrap = true } ) );
+		return card;
 	}
 
 	private static void AskComplete( TaskItem t )
@@ -245,6 +307,6 @@ public sealed class TasksPage : Page
 		=> Dialog.AskString( reason => _ = CollabSession.BlockTaskAsync( t, reason ), $"What is #{t.Id} waiting on?", okay: "Mark blocked", title: "Blocked" );
 
 	private static void AskTakeOver( TaskItem t )
-		=> Dialog.AskConfirm( () => _ = CollabSession.ClaimTaskAsync( t, force: true ),
-			$"#{t.Id} belongs to {t.OwnerName ?? t.OwnerId}. Take it over? They get a handoff message." );
+		=> Dialog.AskString( reason => _ = CollabSession.ClaimTaskAsync( t, force: true, reason: reason ),
+			$"#{t.Id} belongs to {t.OwnerName ?? t.OwnerId}. Why are you taking it over? They get a handoff message.", okay: "Take over", title: "Take over task" );
 }

@@ -211,6 +211,13 @@ public sealed class MainView : Widget
 		_refreshed.Text = CollabSession.LastRefresh is { } at ? $"updated {UiStyle.Clock( at )}" : "";
 	}
 
+	/// <summary>"What changed while I was away?" – shown at the top of Home.</summary>
+	public async Task CatchMeUp()
+	{
+		Show( HomePage );
+		await CollabSession.LoadCatchUpAsync();
+	}
+
 	private static int StatusRank( string s ) => s switch { "blocked" => 0, "working" => 1, "testing" => 2, "planning" => 3, "reviewing" => 4, _ => 5 };
 
 	private void ShowMenu()
@@ -227,6 +234,7 @@ public sealed class MainView : Widget
 				option.Checked = CollabSession.Project?.Id == p.Id;
 			}
 		}
+		menu.AddOption( "Catch me up", "history", () => _ = CatchMeUp() );
 		menu.AddOption( "Refresh", "refresh", () => _ = CollabSession.RefreshAsync() );
 		menu.AddOption( "Sync assets now", "sync", () => _ = AssetSync.SyncAsync() ).Enabled = CollabSession.CanWrite && !AssetSync.Running;
 		menu.AddOption( "Open dashboard", "open_in_new", () => Browser.Open( Settings.ServerUrl ) );
