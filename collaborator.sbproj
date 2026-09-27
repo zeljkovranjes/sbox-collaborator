@@ -1,0 +1,22 @@
+{
+  "Title": "Collaborator",
+  "Type": "library",
+  "Org": "local",
+  "Ident": "collaborator",
+  "Schema": 1,
+  "IncludeSourceFiles": true,
+  "Resources": null,
+  "PackageReferences": [],
+  "EditorReferences": null,
+  "Mounts": null,
+  "IsStandaloneOnly": false,
+  "Metadata": {
+    "Summary": "See what your teammates and their coding agents are working on, reserve files and assets, and share tasks, messages and test results through a self-hosted Collaborator server.",
+    "Compiler": {
+      "RootNamespace": "Collaborator",
+      "DefineConstants": "SANDBOX;ADDON",
+      "Nullables": false,
+      "ReleaseMode": "Release"
+    }
+  }
+}
