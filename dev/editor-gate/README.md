@@ -40,7 +40,7 @@ Needs Steam running, a desktop session, Node 22+ and the server repo next to the
 The test server gets a random `GITHUB_WEBHOOK_SECRET` (the editor gets the same value to sign a
 fake push) and its project is linked to the fixture repository `gatefixture/collabgate`.
 
-## The in-editor checks (`Editor/Collaborator/Dev/EditorGate.cs`)
+## The in-editor checks (`Editor/Dev/EditorGate.cs`)
 
 | check | proves |
 |---|---|
