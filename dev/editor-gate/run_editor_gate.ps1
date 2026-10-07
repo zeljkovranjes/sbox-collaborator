@@ -10,7 +10,7 @@
 #   1. offline compile check (dotnet build dev\CompileCheck.csproj)      - instant fail on C# errors
 #   2. builds/seeds/starts a throwaway Collaborator server (SQLite in %TEMP%)
 #   3. creates a scratch s&box project in %TEMP% with this library junctioned into Libraries/
-#   4. arms the in-editor gate (Editor/Collaborator/Dev/EditorGate.cs) and launches sbox-dev.exe
+#   4. arms the in-editor gate (Editor/Dev/EditorGate.cs) and launches sbox-dev.exe
 #   5. while it runs: prints each check as it lands, answers screenshot / server stop-start
 #      requests, and tails sbox-dev.log + the server log. The FIRST compile error, SB500 /
 #      whitelist violation, exception from our code, server error or failed check kills the
@@ -257,7 +257,7 @@ function Capture([string]$target, [string]$title = "Collaborator") {
 # ---------------------------------------------------------------- 5. watch
 Say "[5/5] watching (first error stops the run)" Cyan
 # Our code, as it appears in compiler output and stack traces.
-$ours = '(?i)(local\.collaborator|[\\/]collaborator[\\/]Editor|Collaborator\.(UI|Net|Dev|CollabSession|AssetSync|AssetGuard|Settings|Toasts|ProjectPaths|EditorThread)|\bcollaborator\.editor\b)'
+$ours = '(?i)(local\.collaborator|[\\/]collaborator[\\/]Editor|Collaborator\.(EditorTools|UI|Net|Dev|CollabSession|AssetSync|AssetGuard|Settings|Toasts|ProjectPaths|EditorThread)|\bcollaborator\.editor\b)'
 $compileError = '(?i)(error\s+CS\d{4}|\bSB500\b|whitelist|failed to compile|compile(r)? error)'
 $exceptionLine = '(?i)(exception|unhandled)'
 $logPos = $logStart

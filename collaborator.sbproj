@@ -11,7 +11,10 @@
   "Mounts": null,
   "IsStandaloneOnly": false,
   "Metadata": {
-    "Summary": "See what your teammates and their coding agents are working on, reserve files and assets, and share tasks, messages and test results through a self-hosted Collaborator server.",
+    "Summary": "Shows what your teammates and their coding agents are doing, inside the s&box editor, through a self-hosted server.",
+    "Description": "An editor window (View > Collaborator) that connects to your team's self-hosted Collaborator server. It shows who is online and what they and their coding agents are working on, and lets you claim tasks, reserve files and assets, send messages and log test results. Open scenes are reserved, compile results shared and playtests logged automatically. Needs a running Collaborator server, a server key from whoever runs it, and a GitHub account.",
+    "WebsiteUrl": "https://github.com/zeljkovranjes/sbox-collaborator",
+    "Tags": [ "editor", "collaboration", "teamwork", "task-tracking", "file-reservations" ],
     "Compiler": {
       "RootNamespace": "Collaborator",
       "DefineConstants": "SANDBOX;ADDON",
